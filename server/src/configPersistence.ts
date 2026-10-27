@@ -2,9 +2,28 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import type { TicketLabelCase } from '../../core/src/messages.js';
 import { CONFIG_FILE_NAME, LAYOUT_FILE_DIR } from './constants.js';
 
-export interface AdapterSettings {
+/** Optional agent-directory settings (roster, declared status, ticket label, activity history). They are hand-set in
+ *  config.json and READ-ONLY to the app: they are deliberately absent from ADAPTER_SETTING_KEYS, so
+ *  FileStateAdapter.setSetting ignores them and no client message can write them. Every key absent = the feature is
+ *  off and the app behaves exactly as without it. The parse keeps them only type-checked (so the readConfig →
+ *  writeConfig cycle of every other setting round-trips them untouched); resolveAgentDirectorySettings applies the
+ *  semantic checks and defaults at use. */
+export interface AgentDirectorySettings {
+  /** Absolute path to the roster JSON (handle → {name, department, title, supervisor, tier}). */
+  agentRosterPath?: string;
+  /** Absolute path to the declared-status JSON (handle → {state, ticket?, reason?, updatedAt}). */
+  agentStatusPath?: string;
+  /** Regex that finds a ticket ID in an agent's git branch, e.g. `bb-\d+`. */
+  ticketPattern?: string;
+  ticketLabelCase?: TicketLabelCase;
+  /** Activity-history entries kept per agent. */
+  historySize?: number;
+}
+
+export interface AdapterSettings extends AgentDirectorySettings {
   soundEnabled: boolean;
   lastSeenVersion: string;
   alwaysShowLabels: boolean;
@@ -15,10 +34,11 @@ export interface AdapterSettings {
   areaMappings: Record<string, string[]>;
 }
 
-/** All keys in AdapterSettings. Used by adapters to map `pixel-agents.foo` → `foo`.
+/** All client-writable keys in AdapterSettings. Used by adapters to map `pixel-agents.foo` → `foo`.
  *  The hooks preference is NOT here: it is per-provider and machine-global
  *  (the hooks it governs live in one home-directory file per provider), so it
- *  lives beside `hooksConsent` at the config top level, not per namespace. */
+ *  lives beside `hooksConsent` at the config top level, not per namespace.
+ *  The AgentDirectorySettings keys are NOT here either: they are config.json-only. */
 export const ADAPTER_SETTING_KEYS = [
   'soundEnabled',
   'lastSeenVersion',
@@ -114,6 +134,70 @@ export function parseAreaMappings(raw: unknown): Record<string, string[]> {
   return out;
 }
 
+export const DEFAULT_HISTORY_SIZE = 50;
+export const MAX_HISTORY_SIZE = 200;
+/** Longest ticketPattern accepted; a longer one disables ticket matching (ReDoS guard, with the 128-char input cap). */
+export const MAX_TICKET_PATTERN_LENGTH = 200;
+
+/** Coerce the agent-directory keys of a loose namespace object, dropping wrong-typed values. Only keys that hold a
+ *  usable type are set, so a config without them parses (and re-writes) without them. */
+export function parseAgentDirectorySettings(raw: unknown): AgentDirectorySettings {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const obj = raw as Record<string, unknown>;
+  const out: AgentDirectorySettings = {};
+  if (typeof obj.agentRosterPath === 'string' && obj.agentRosterPath !== '') {
+    out.agentRosterPath = obj.agentRosterPath;
+  }
+  if (typeof obj.agentStatusPath === 'string' && obj.agentStatusPath !== '') {
+    out.agentStatusPath = obj.agentStatusPath;
+  }
+  if (typeof obj.ticketPattern === 'string' && obj.ticketPattern !== '') {
+    out.ticketPattern = obj.ticketPattern;
+  }
+  if (obj.ticketLabelCase === 'upper' || obj.ticketLabelCase === 'asis') {
+    out.ticketLabelCase = obj.ticketLabelCase;
+  }
+  if (typeof obj.historySize === 'number' && Number.isInteger(obj.historySize)) {
+    out.historySize = Math.min(MAX_HISTORY_SIZE, Math.max(1, obj.historySize));
+  }
+  return out;
+}
+
+/** The agent-directory settings as the runtime uses them: defaults applied, and anything unsafe or unusable turned
+ *  off rather than thrown. A non-absolute path is null (paths are never resolved against the cwd); a ticketPattern
+ *  that is too long or does not compile is null (no ticket matching). */
+export interface ResolvedAgentDirectorySettings {
+  agentRosterPath: string | null;
+  agentStatusPath: string | null;
+  ticketPattern: string | null;
+  ticketLabelCase: TicketLabelCase;
+  historySize: number;
+}
+
+export function resolveAgentDirectorySettings(
+  settings: AgentDirectorySettings,
+): ResolvedAgentDirectorySettings {
+  const absolute = (p: string | undefined): string | null =>
+    p !== undefined && path.isAbsolute(p) ? p : null;
+  return {
+    agentRosterPath: absolute(settings.agentRosterPath),
+    agentStatusPath: absolute(settings.agentStatusPath),
+    ticketPattern: compilableTicketPattern(settings.ticketPattern),
+    ticketLabelCase: settings.ticketLabelCase ?? 'upper',
+    historySize: settings.historySize ?? DEFAULT_HISTORY_SIZE,
+  };
+}
+
+function compilableTicketPattern(pattern: string | undefined): string | null {
+  if (pattern === undefined || pattern.length > MAX_TICKET_PATTERN_LENGTH) return null;
+  try {
+    new RegExp(pattern);
+    return pattern;
+  } catch {
+    return null;
+  }
+}
+
 /** Coerce a loose object into a valid AdapterSettings with defaults for missing/wrong-typed fields. */
 function parseAdapterSettings(raw: unknown): AdapterSettings {
   const obj = (raw && typeof raw === 'object' ? raw : {}) as Partial<AdapterSettings>;
@@ -145,6 +229,7 @@ function parseAdapterSettings(raw: unknown): AdapterSettings {
     showAreas:
       typeof obj.showAreas === 'boolean' ? obj.showAreas : DEFAULT_ADAPTER_SETTINGS.showAreas,
     areaMappings: parseAreaMappings(obj.areaMappings),
+    ...parseAgentDirectorySettings(obj),
   };
 }
 
