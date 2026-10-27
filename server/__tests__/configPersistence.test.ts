@@ -3,19 +3,35 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import type { AgentIdentity, SettingsLoaded } from '../../core/src/messages.js';
 import {
+  ADAPTER_SETTING_KEYS,
   clearHooksAnswer,
   clearHooksEnabled,
+  DEFAULT_HISTORY_SIZE,
   getHooksConsent,
   getHooksEnabled,
   grantHooksConsent,
+  MAX_HISTORY_SIZE,
+  MAX_TICKET_PATTERN_LENGTH,
+  parseAgentDirectorySettings,
   parseAreaMappings,
   readConfig,
   recordHooksDecline,
   resetHooksConfig,
+  resolveAgentDirectorySettings,
   setHooksEnabled,
   writeConfig,
 } from '../src/configPersistence.js';
+import { FileStateAdapter } from '../src/fileStateAdapter.js';
+
+const AGENT_DIRECTORY_KEYS = [
+  'agentRosterPath',
+  'agentStatusPath',
+  'ticketPattern',
+  'ticketLabelCase',
+  'historySize',
+] as const;
 
 describe('configPersistence: areas', () => {
   let tempHome: string;
@@ -272,6 +288,134 @@ describe('configPersistence: areas', () => {
       const reloaded = readConfig();
       expect(reloaded.vscode.areaMappings).toEqual({ frontend: ['Engineering'] });
       expect(reloaded.standalone.areaMappings).toEqual({});
+    });
+  });
+
+  // ── Agent-directory settings (config.json only) ──────────────
+
+  describe('agent-directory settings', () => {
+    const configFile = (): string => path.join(tempHome, '.pixel-agents', 'config.json');
+    const writeRaw = (obj: unknown): void => {
+      fs.mkdirSync(path.dirname(configFile()), { recursive: true });
+      fs.writeFileSync(configFile(), JSON.stringify(obj), 'utf-8');
+    };
+
+    it('no settings: no key appears after a read → write cycle (no-settings regression)', () => {
+      writeConfig(readConfig());
+      const onDisk = JSON.parse(fs.readFileSync(configFile(), 'utf-8'));
+      for (const key of AGENT_DIRECTORY_KEYS) {
+        expect(onDisk.standalone).not.toHaveProperty(key);
+        expect(onDisk.vscode).not.toHaveProperty(key);
+      }
+    });
+
+    it('hand-set values survive another setting being written', () => {
+      const settings = {
+        agentRosterPath: '/org/roster.json',
+        agentStatusPath: '/org/agent-status.json',
+        ticketPattern: 'bb-\\d+',
+        ticketLabelCase: 'upper',
+        historySize: 50,
+      };
+      writeRaw({ standalone: settings });
+      setHooksEnabled('claude', false);
+      expect(readConfig().standalone).toMatchObject(settings);
+    });
+
+    it('drops wrong-typed and empty values and clamps historySize', () => {
+      expect(
+        parseAgentDirectorySettings({
+          agentRosterPath: 42,
+          agentStatusPath: '',
+          ticketPattern: ['bb'],
+          ticketLabelCase: 'lower',
+          historySize: 1000,
+        }),
+      ).toEqual({ historySize: MAX_HISTORY_SIZE });
+      expect(parseAgentDirectorySettings({ historySize: 0 })).toEqual({ historySize: 1 });
+      expect(parseAgentDirectorySettings({ historySize: 2.5 })).toEqual({});
+      expect(parseAgentDirectorySettings({ historySize: '50' })).toEqual({});
+      expect(parseAgentDirectorySettings(null)).toEqual({});
+      expect(parseAgentDirectorySettings([])).toEqual({});
+    });
+
+    it('is not client-writable: excluded from ADAPTER_SETTING_KEYS and ignored by setSetting', () => {
+      for (const key of AGENT_DIRECTORY_KEYS) {
+        expect(ADAPTER_SETTING_KEYS as readonly string[]).not.toContain(key);
+      }
+      const adapter = new FileStateAdapter({ namespace: 'standalone' });
+      adapter.setSetting('pixel-agents.agentRosterPath', '/evil.json');
+      adapter.setSetting('agentStatusPath', '/evil.json');
+      expect(readConfig().standalone.agentRosterPath).toBeUndefined();
+      expect(readConfig().standalone.agentStatusPath).toBeUndefined();
+    });
+
+    it('the protocol has no set* client message for these settings', () => {
+      const yaml = fs.readFileSync(path.join(__dirname, '../../core/asyncapi.yaml'), 'utf-8');
+      expect(yaml).not.toMatch(
+        /set(AgentRosterPath|AgentStatusPath|TicketPattern|TicketLabelCase|HistorySize)/i,
+      );
+    });
+
+    it('settingsLoaded carries no ticket keys: the server derives agentIdentity.ticket', () => {
+      const yaml = fs.readFileSync(path.join(__dirname, '../../core/asyncapi.yaml'), 'utf-8');
+      const settingsLoaded = yaml.match(/\n {4}SettingsLoaded:\n[\s\S]*?(?=\n {4}\S)/)?.[0];
+      expect(settingsLoaded).toBeDefined();
+      expect(settingsLoaded).not.toMatch(/ticket/i);
+      expect(settingsLoaded).toMatch(/\n {8}historySize:/);
+      const agentIdentity = yaml.match(/\n {4}AgentIdentity:\n[\s\S]*?(?=\n {4}\S)/)?.[0];
+      expect(agentIdentity).toMatch(/\n {8}ticket:\n {10}type: string\n {10}maxLength: 32\n/);
+
+      // Compile-time half (checked by `tsc -p server/tsconfig.test.json`): the generated types agree.
+      const noTicketKeys: Extract<keyof SettingsLoaded, `ticket${string}`> extends never
+        ? true
+        : false = true;
+      const identity: AgentIdentity = { type: 'agentIdentity', id: 1, ticket: 'BB-42' };
+      expect(noTicketKeys).toBe(true);
+      expect(identity.ticket).toBe('BB-42');
+    });
+
+    it('resolves defaults when nothing is set', () => {
+      expect(resolveAgentDirectorySettings({})).toEqual({
+        agentRosterPath: null,
+        agentStatusPath: null,
+        ticketPattern: null,
+        ticketLabelCase: 'upper',
+        historySize: DEFAULT_HISTORY_SIZE,
+      });
+    });
+
+    it('turns off relative paths and unusable ticket patterns instead of throwing', () => {
+      const resolved = resolveAgentDirectorySettings({
+        agentRosterPath: 'roster.json',
+        agentStatusPath: '../status.json',
+        ticketPattern: 'bb-(\\d+',
+      });
+      expect(resolved.agentRosterPath).toBeNull();
+      expect(resolved.agentStatusPath).toBeNull();
+      expect(resolved.ticketPattern).toBeNull();
+      expect(
+        resolveAgentDirectorySettings({ ticketPattern: 'a'.repeat(MAX_TICKET_PATTERN_LENGTH + 1) })
+          .ticketPattern,
+      ).toBeNull();
+    });
+
+    it('passes valid values through', () => {
+      expect(
+        resolveAgentDirectorySettings({
+          agentRosterPath: '/org/roster.json',
+          agentStatusPath: '/org/agent-status.json',
+          ticketPattern: 'bb-\\d+',
+          ticketLabelCase: 'asis',
+          historySize: 120,
+        }),
+      ).toEqual({
+        agentRosterPath: '/org/roster.json',
+        agentStatusPath: '/org/agent-status.json',
+        ticketPattern: 'bb-\\d+',
+        ticketLabelCase: 'asis',
+        historySize: 120,
+      });
     });
   });
 });

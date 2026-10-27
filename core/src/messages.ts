@@ -25,6 +25,11 @@ export type ServerMessage =
   | SubagentToolPermission
   | AgentTeamInfo
   | AgentContextUsage
+  | AgentIdentity
+  | AgentRosterLoaded
+  | AgentDeclaredStatus
+  | AgentHistory
+  | AgentHistoryAppend
   | LayoutLoaded
   | FurnitureAssetsLoaded
   | CharacterSpritesLoaded
@@ -188,6 +193,61 @@ export interface AgentContextUsage {
   maxContextTokens: number;
 }
 
+export interface AgentIdentity {
+  type: 'agentIdentity';
+  id: number;
+  displayName?: string;
+  gitBranch?: string;
+  ticket?: string;
+}
+
+export interface AgentRosterLoaded {
+  type: 'agentRosterLoaded';
+  roster: Record<string, AgentRosterEntry>;
+}
+
+export interface AgentRosterEntry {
+  name?: string;
+  department?: string;
+  title?: string;
+  supervisor?: string;
+  tier?: string;
+}
+
+export interface AgentDeclaredStatus {
+  type: 'agentDeclaredStatus';
+  statuses: Record<string, DeclaredAgentStatus>;
+}
+
+export interface DeclaredAgentStatus {
+  state: DeclaredAgentState;
+  ticket?: string;
+  reason?: string;
+  updatedAt: string;
+}
+
+export type DeclaredAgentState = 'blocked' | 'reserve';
+
+export interface AgentHistory {
+  type: 'agentHistory';
+  id: number;
+  entries: ActivityEntry[];
+}
+
+export interface ActivityEntry {
+  at: number;
+  kind: ActivityKind;
+  text: string;
+}
+
+export type ActivityKind = 'tool' | 'turnStart' | 'turnEnd' | 'waiting' | 'permission';
+
+export interface AgentHistoryAppend {
+  type: 'agentHistoryAppend';
+  id: number;
+  entry: ActivityEntry;
+}
+
 export interface LayoutLoaded {
   type: 'layoutLoaded';
   layout: Record<string, any> | null;
@@ -275,6 +335,7 @@ export interface SettingsLoaded {
   hooksInfoShown: boolean;
   externalAssetDirectories: string[];
   showAreas: boolean;
+  historySize?: number;
 }
 
 export interface HooksStatus {

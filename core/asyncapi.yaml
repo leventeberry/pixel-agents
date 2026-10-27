@@ -100,6 +100,12 @@ components:
         - $ref: '#/components/schemas/AgentTeamInfo'
         # Context window
         - $ref: '#/components/schemas/AgentContextUsage'
+        # Agent directory (identity, roster, declared status, activity history)
+        - $ref: '#/components/schemas/AgentIdentity'
+        - $ref: '#/components/schemas/AgentRosterLoaded'
+        - $ref: '#/components/schemas/AgentDeclaredStatus'
+        - $ref: '#/components/schemas/AgentHistory'
+        - $ref: '#/components/schemas/AgentHistoryAppend'
         # Layout
         - $ref: '#/components/schemas/LayoutLoaded'
         # Assets
@@ -442,6 +448,121 @@ components:
         maxContextTokens:
           type: integer
 
+    AgentIdentity:
+      description: |
+        Display identity derived from the agent's own transcript. `displayName`
+        comes from the session's custom-title / agent-name records and is
+        DISTINCT from the Agent Teams `agentName` in `agentTeamInfo` (that one
+        links teammates to their lead and is never overwritten by this).
+        `gitBranch` is the branch the session last reported. `ticket` is the
+        ticket ID the SERVER derived from `gitBranch` with the operator's
+        `ticketPattern` setting (config.json only), already in its display
+        case; clients never compile a pattern themselves. Sent when any value
+        first becomes known or changes, and replayed on connect. An absent
+        field is unknown, not cleared.
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: agentIdentity
+        id:
+          type: integer
+        displayName:
+          type: string
+          maxLength: 64
+          description: Control characters stripped, at most 64 characters.
+        gitBranch:
+          type: string
+          maxLength: 128
+          description: Control characters stripped, at most 128 characters.
+        ticket:
+          type: string
+          maxLength: 32
+          description: >-
+            Ticket label matched in `gitBranch` (e.g. "BB-42"), at most 32
+            characters. Absent = no ticket (no pattern set, or no match).
+
+    AgentRosterLoaded:
+      description: |
+        The operator-supplied agent roster, read from the file named by the
+        `agentRosterPath` setting (config.json only; no client message sets
+        it). Sent on connect and again whenever the file changes; each message
+        replaces the previous roster in full. An empty `roster` means there is
+        no usable roster (setting absent, file missing or invalid). Standalone
+        sends it to privileged (tokened) connections only.
+      type: object
+      additionalProperties: false
+      required: [type, roster]
+      properties:
+        type:
+          const: agentRosterLoaded
+        roster:
+          type: object
+          description: >-
+            Map of agent handle (the workspace folder name, matching
+            `agentCreated.folderName`) to that agent's roster entry.
+          additionalProperties:
+            $ref: '#/components/schemas/AgentRosterEntry'
+
+    AgentDeclaredStatus:
+      description: |
+        Operator-declared agent states, read from the file named by the
+        `agentStatusPath` setting (config.json only; no client message sets
+        it). Sent on connect and again whenever the file changes; each message
+        replaces the previous map in full. Declared states are never inferred
+        from transcript text. Clients ignore an entry whose `updatedAt` is more
+        than 24 hours old. Standalone sends it to privileged (tokened)
+        connections only.
+      type: object
+      additionalProperties: false
+      required: [type, statuses]
+      properties:
+        type:
+          const: agentDeclaredStatus
+        statuses:
+          type: object
+          description: Map of agent handle (workspace folder name) to its declared state.
+          additionalProperties:
+            $ref: '#/components/schemas/DeclaredAgentStatus'
+
+    AgentHistory:
+      description: |
+        The agent's recent activity, oldest first. Replaces the client's copy in
+        full; sent on connect (replay). Held in server memory only, never
+        persisted, cleared when the server restarts; at most `historySize`
+        entries (default 50, max 200). Standalone sends it to privileged
+        (tokened) connections only.
+      type: object
+      additionalProperties: false
+      required: [type, id, entries]
+      properties:
+        type:
+          const: agentHistory
+        id:
+          type: integer
+        entries:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/ActivityEntry'
+
+    AgentHistoryAppend:
+      description: |
+        One new activity entry for the agent. Clients append it and drop the
+        oldest entries beyond `historySize`. Standalone sends it to privileged
+        (tokened) connections only.
+      type: object
+      additionalProperties: false
+      required: [type, id, entry]
+      properties:
+        type:
+          const: agentHistoryAppend
+        id:
+          type: integer
+        entry:
+          $ref: '#/components/schemas/ActivityEntry'
+
     LayoutLoaded:
       description: |
         Office layout (tiles, furniture, colors). `null` when no layout file or
@@ -669,6 +790,14 @@ components:
             type: string
         showAreas:
           type: boolean
+        historySize:
+          type: integer
+          minimum: 1
+          maximum: 200
+          description: >-
+            Activity-history entries kept per agent: the server's resolved
+            value (default 50, clamped to 1..200), never the raw setting.
+            Clients cap their history buffer to it.
 
     HooksStatus:
       description: |
@@ -1065,6 +1194,73 @@ components:
           const: requestDiagnostics
 
     # ── Supporting schemas ─────────────────────────────────────────
+
+    AgentRosterEntry:
+      description: |
+        One roster entry. Every field is optional; clients fall back to
+        transcript or folder data for whatever is missing. Plain text only:
+        clients render these as text, never as HTML or links.
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        department:
+          type: string
+          description: Matched against Area labels when the folder has no area mapping.
+        title:
+          type: string
+        supervisor:
+          type: string
+          description: Handle of this agent's supervisor (a key of the same roster).
+        tier:
+          type: string
+          description: Free-form tier; the value "reserve" marks a reserve agent.
+
+    DeclaredAgentStatus:
+      type: object
+      additionalProperties: false
+      required: [state, updatedAt]
+      properties:
+        state:
+          $ref: '#/components/schemas/DeclaredAgentState'
+        ticket:
+          type: string
+          description: Ticket the agent is on, shown when its branch names none. Text only.
+        reason:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+          description: ISO 8601 time of the declaration; entries older than 24 hours are ignored.
+
+    DeclaredAgentState:
+      description: An operator-declared state. Never inferred from transcripts.
+      type: string
+      enum: [blocked, reserve]
+
+    ActivityEntry:
+      description: |
+        One activity-history entry. `text` is a status label only (e.g. the
+        formatted tool status): never commands, arguments, file contents or
+        tokens.
+      type: object
+      additionalProperties: false
+      required: [at, kind, text]
+      properties:
+        at:
+          type: integer
+          description: Unix epoch milliseconds.
+        kind:
+          $ref: '#/components/schemas/ActivityKind'
+        text:
+          type: string
+          maxLength: 160
+
+    ActivityKind:
+      description: What happened, limited to transitions the server already tracks.
+      type: string
+      enum: [tool, turnStart, turnEnd, waiting, permission]
 
     AgentSeatMeta:
       description: |
