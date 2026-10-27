@@ -198,6 +198,7 @@ export interface AgentIdentity {
   id: number;
   displayName?: string;
   gitBranch?: string;
+  ticket?: string;
 }
 
 export interface AgentRosterLoaded {
@@ -334,12 +335,8 @@ export interface SettingsLoaded {
   hooksInfoShown: boolean;
   externalAssetDirectories: string[];
   showAreas: boolean;
-  ticketPattern?: string;
-  ticketLabelCase?: TicketLabelCase;
   historySize?: number;
 }
-
-export type TicketLabelCase = 'upper' | 'asis';
 
 export interface HooksStatus {
   type: 'hooksStatus';

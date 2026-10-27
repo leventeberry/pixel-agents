@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import type { AgentIdentity, SettingsLoaded } from '../../core/src/messages.js';
 import {
   ADAPTER_SETTING_KEYS,
   clearHooksAnswer,
@@ -354,6 +355,24 @@ describe('configPersistence: areas', () => {
       expect(yaml).not.toMatch(
         /set(AgentRosterPath|AgentStatusPath|TicketPattern|TicketLabelCase|HistorySize)/i,
       );
+    });
+
+    it('settingsLoaded carries no ticket keys: the server derives agentIdentity.ticket', () => {
+      const yaml = fs.readFileSync(path.join(__dirname, '../../core/asyncapi.yaml'), 'utf-8');
+      const settingsLoaded = yaml.match(/\n {4}SettingsLoaded:\n[\s\S]*?(?=\n {4}\S)/)?.[0];
+      expect(settingsLoaded).toBeDefined();
+      expect(settingsLoaded).not.toMatch(/ticket/i);
+      expect(settingsLoaded).toMatch(/\n {8}historySize:/);
+      const agentIdentity = yaml.match(/\n {4}AgentIdentity:\n[\s\S]*?(?=\n {4}\S)/)?.[0];
+      expect(agentIdentity).toMatch(/\n {8}ticket:\n {10}type: string\n {10}maxLength: 32\n/);
+
+      // Compile-time half (checked by `tsc -p server/tsconfig.test.json`): the generated types agree.
+      const noTicketKeys: Extract<keyof SettingsLoaded, `ticket${string}`> extends never
+        ? true
+        : false = true;
+      const identity: AgentIdentity = { type: 'agentIdentity', id: 1, ticket: 'BB-42' };
+      expect(noTicketKeys).toBe(true);
+      expect(identity.ticket).toBe('BB-42');
     });
 
     it('resolves defaults when nothing is set', () => {

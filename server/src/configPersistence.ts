@@ -2,8 +2,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import type { TicketLabelCase } from '../../core/src/messages.js';
 import { CONFIG_FILE_NAME, LAYOUT_FILE_DIR } from './constants.js';
+
+/** How the server shows a ticket ID it matched in a branch (`upper` gives "BB-40", `asis` keeps the matched text).
+ *  Server-only: clients receive the finished label in `agentIdentity.ticket`, never the pattern or the case. */
+export type TicketLabelCase = 'upper' | 'asis';
 
 /** Optional agent-directory settings (roster, declared status, ticket label, activity history). They are hand-set in
  *  config.json and READ-ONLY to the app: they are deliberately absent from ADAPTER_SETTING_KEYS, so
@@ -136,7 +139,9 @@ export function parseAreaMappings(raw: unknown): Record<string, string[]> {
 
 export const DEFAULT_HISTORY_SIZE = 50;
 export const MAX_HISTORY_SIZE = 200;
-/** Longest ticketPattern accepted; a longer one disables ticket matching (ReDoS guard, with the 128-char input cap). */
+/** Longest ticketPattern accepted; a longer one disables ticket matching. This caps pattern length only and does not
+ *  prevent catastrophic backtracking: the bound on matching cost is that the pattern runs (server-side only) against a
+ *  gitBranch of at most 128 characters, and the pattern itself comes from the owner's config.json. */
 export const MAX_TICKET_PATTERN_LENGTH = 200;
 
 /** Coerce the agent-directory keys of a loose namespace object, dropping wrong-typed values. Only keys that hold a

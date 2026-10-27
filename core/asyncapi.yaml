@@ -454,9 +454,12 @@ components:
         comes from the session's custom-title / agent-name records and is
         DISTINCT from the Agent Teams `agentName` in `agentTeamInfo` (that one
         links teammates to their lead and is never overwritten by this).
-        `gitBranch` is the branch the session last reported. Sent when either
-        value first becomes known or changes, and replayed on connect. An
-        absent field is unknown, not cleared.
+        `gitBranch` is the branch the session last reported. `ticket` is the
+        ticket ID the SERVER derived from `gitBranch` with the operator's
+        `ticketPattern` setting (config.json only), already in its display
+        case; clients never compile a pattern themselves. Sent when any value
+        first becomes known or changes, and replayed on connect. An absent
+        field is unknown, not cleared.
       type: object
       additionalProperties: false
       required: [type, id]
@@ -473,6 +476,12 @@ components:
           type: string
           maxLength: 128
           description: Control characters stripped, at most 128 characters.
+        ticket:
+          type: string
+          maxLength: 32
+          description: >-
+            Ticket label matched in `gitBranch` (e.g. "BB-42"), at most 32
+            characters. Absent = no ticket (no pattern set, or no match).
 
     AgentRosterLoaded:
       description: |
@@ -781,20 +790,14 @@ components:
             type: string
         showAreas:
           type: boolean
-        ticketPattern:
-          type: string
-          description: >-
-            Regex (the `ticketPattern` setting) that finds a ticket ID in
-            `agentIdentity.gitBranch`. Absent = no ticket matching. Clients
-            match against at most 128 characters and disable matching when the
-            pattern does not compile.
-        ticketLabelCase:
-          $ref: '#/components/schemas/TicketLabelCase'
         historySize:
           type: integer
           minimum: 1
           maximum: 200
-          description: Activity-history entries kept per agent (default 50, max 200).
+          description: >-
+            Activity-history entries kept per agent: the server's resolved
+            value (default 50, clamped to 1..200), never the raw setting.
+            Clients cap their history buffer to it.
 
     HooksStatus:
       description: |
@@ -1258,11 +1261,6 @@ components:
       description: What happened, limited to transitions the server already tracks.
       type: string
       enum: [tool, turnStart, turnEnd, waiting, permission]
-
-    TicketLabelCase:
-      description: How a matched ticket ID is shown (`upper` gives "BB-40", `asis` keeps the matched text).
-      type: string
-      enum: [upper, asis]
 
     AgentSeatMeta:
       description: |
